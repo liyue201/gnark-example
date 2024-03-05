@@ -1,1 +1,1 @@
-# gnark-example
+# gnark-solidity-example
