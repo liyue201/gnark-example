@@ -93,7 +93,7 @@ func verify(vk groth16.VerifyingKey, proofBytes []byte) {
 	assignment := TestCircuit{
 		A:   1,
 		B:   2,
-		Sum: 3,
+		Sum: 0,
 	}
 
 	witness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
