@@ -54,11 +54,11 @@ func setup() (constraint.ConstraintSystem, groth16.ProvingKey, groth16.Verifying
 	return r1cs, pk, vk, nil
 }
 
-func prove(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey) ([]byte, error) {
+func prove(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, publicInput []int) ([]byte, error) {
 	assignment := TestCircuit{
-		A:   1,
-		B:   2,
-		Sum: 3,
+		A:   publicInput[0],
+		B:   publicInput[1],
+		Sum: publicInput[0] + publicInput[1],
 	}
 
 	witness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
@@ -80,19 +80,15 @@ func prove(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey) ([]byte, err
 
 	proofInt := writeProof(buf.Bytes())
 	saveJson("proof.json", proofInt)
-
-	publicInput := make([]*big.Int, 2)
-	publicInput[0] = big.NewInt(1)
-	publicInput[1] = big.NewInt(2)
 	saveJson("input.json", publicInput)
 
 	return buf.Bytes(), nil
 }
 
-func verify(vk groth16.VerifyingKey, proofBytes []byte) {
+func verify(vk groth16.VerifyingKey, proofBytes []byte, publicInput []int) {
 	assignment := TestCircuit{
-		A:   1,
-		B:   2,
+		A:   publicInput[0],
+		B:   publicInput[1],
 		Sum: 0,
 	}
 
@@ -140,9 +136,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	proof, err := prove(r1cs, pk)
+	publicInput := []int{2, 5}
+	proof, err := prove(r1cs, pk, publicInput)
 	if err != nil {
 		panic(err)
 	}
-	verify(vk, proof)
+	verify(vk, proof, publicInput)
 }
