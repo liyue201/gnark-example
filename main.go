@@ -54,7 +54,7 @@ func setup() (constraint.ConstraintSystem, groth16.ProvingKey, groth16.Verifying
 	return r1cs, pk, vk, nil
 }
 
-func prove(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey) ([]byte, error) {
+func prove(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey) ([]byte, error) {
 	assignment := TestCircuit{
 		A:   1,
 		B:   2,
@@ -140,7 +140,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	proof, err := prove(r1cs, pk, vk)
+	proof, err := prove(r1cs, pk)
 	if err != nil {
 		panic(err)
 	}
