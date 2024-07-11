@@ -16,7 +16,7 @@ import (
 // a + b = sum
 type TestCircuit struct {
 	A   frontend.Variable `gnark:",public"`
-	B   frontend.Variable `gnark:",public"`
+	B   frontend.Variable
 	Sum frontend.Variable
 }
 
@@ -76,7 +76,7 @@ func prove(r1cs frontend.CompiledConstraintSystem, pk groth16.ProvingKey, vk gro
 		return nil, err
 	}
 
-	proofInt := writeProof(buf.Bytes())
+	proofInt := writeProof(buf.Bytes(), &assignment)
 	saveJson("proof.json", proofInt)
 
 	publicInput := make([]*big.Int, 2)
@@ -112,15 +112,31 @@ func saveJson(filename string, v interface{}) {
 	ioutil.WriteFile(filename, proofJson, 0644)
 }
 
-func writeProof(proofBytes []byte) [8]*big.Int {
+type Proof struct {
+	A     [2]*big.Int
+	B     [2][2]*big.Int
+	C     [2]*big.Int
+	Input [1]int
+}
+
+func writeProof(proofBytes []byte, assignment *TestCircuit) *Proof {
 	const fpSize = 4 * 8
 
-	var proof [8]*big.Int
+	var proofBlob Proof
 
-	for i := 0; i < 8; i++ {
-		proof[i] = new(big.Int).SetBytes(proofBytes[fpSize*i : fpSize*(i+1)])
-	}
-	return proof
+	// proof.Ar, proof.Bs, proof.Krs
+	proofBlob.A[0] = new(big.Int).SetBytes(proofBytes[fpSize*0 : fpSize*1])
+	proofBlob.A[1] = new(big.Int).SetBytes(proofBytes[fpSize*1 : fpSize*2])
+	proofBlob.B[0][0] = new(big.Int).SetBytes(proofBytes[fpSize*2 : fpSize*3])
+	proofBlob.B[0][1] = new(big.Int).SetBytes(proofBytes[fpSize*3 : fpSize*4])
+	proofBlob.B[1][0] = new(big.Int).SetBytes(proofBytes[fpSize*4 : fpSize*5])
+	proofBlob.B[1][1] = new(big.Int).SetBytes(proofBytes[fpSize*5 : fpSize*6])
+	proofBlob.C[0] = new(big.Int).SetBytes(proofBytes[fpSize*6 : fpSize*7])
+	proofBlob.C[1] = new(big.Int).SetBytes(proofBytes[fpSize*7 : fpSize*8])
+
+	proofBlob.Input[0] = assignment.A.(int)
+
+	return &proofBlob
 }
 
 func main() {
