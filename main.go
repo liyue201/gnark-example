@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/backend/groth16"
-	bn254 "github.com/consensys/gnark/backend/groth16/bn254"
-	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"io/ioutil"
@@ -28,8 +26,8 @@ func (circuit *TestCircuit) Define(api frontend.API) error {
 	return nil
 }
 
-func setup() (constraint.ConstraintSystem, groth16.ProvingKey, groth16.VerifyingKey, error) {
-	r1cs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &TestCircuit{}, frontend.IgnoreUnconstrainedInputs())
+func setup() (frontend.CompiledConstraintSystem, groth16.ProvingKey, groth16.VerifyingKey, error) {
+	r1cs, err := frontend.Compile(ecc.BN254, r1cs.NewBuilder, &TestCircuit{}, frontend.IgnoreUnconstrainedInputs())
 	if err != nil {
 		fmt.Printf("Compile error: %v\n", err)
 		return nil, nil, nil, err
@@ -54,14 +52,14 @@ func setup() (constraint.ConstraintSystem, groth16.ProvingKey, groth16.Verifying
 	return r1cs, pk, vk, nil
 }
 
-func prove(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey) ([]byte, error) {
+func prove(r1cs frontend.CompiledConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey) (groth16.Proof, error) {
 	assignment := TestCircuit{
 		A:   1,
 		B:   2,
 		Sum: 3,
 	}
 
-	witness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
+	witness, err := frontend.NewWitness(&assignment, ecc.BN254)
 	if err != nil {
 		fmt.Printf("NewWitness error: %v\n", err)
 		return nil, err
@@ -86,33 +84,23 @@ func prove(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.V
 	publicInput[1] = big.NewInt(2)
 	saveJson("input.json", publicInput)
 
-	return buf.Bytes(), nil
+	return proof, nil
 }
 
-func verify(vk groth16.VerifyingKey, proofBytes []byte) {
+func verify(vk groth16.VerifyingKey, proof groth16.Proof) {
 	assignment := TestCircuit{
 		A:   1,
 		B:   2,
 		Sum: 0,
 	}
 
-	witness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
+	witness, err := frontend.NewWitness(&assignment, ecc.BN254)
 	if err != nil {
 		panic(err)
 	}
 	publicWitness, _ := witness.Public()
 
-	var proof bn254.Proof
-	var buf bytes.Buffer
-	_, err = buf.Write(proofBytes)
-	if err != nil {
-		panic(err)
-	}
-	_, err = proof.ReadFrom(&buf)
-	if err != nil {
-		panic(err)
-	}
-	err = groth16.Verify(&proof, vk, publicWitness)
+	err = groth16.Verify(proof, vk, publicWitness)
 	if err != nil {
 		panic(err)
 	}

@@ -1,540 +1,230 @@
 
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AML
+// 
+// Copyright 2017 Christian Reitwiessner
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to
+// deal in the Software without restriction, including without limitation the
+// rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+// sell copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+// IN THE SOFTWARE.
+
+// 2019 OKIMS
 
 pragma solidity ^0.8.0;
 
-/// @title Groth16 verifier template.
-/// @author Remco Bloemen
-/// @notice Supports verifying Groth16 proofs. Proofs can be in uncompressed
-/// (256 bytes) and compressed (128 bytes) format. A view function is provided
-/// to compress proofs.
-/// @notice See <https://2π.com/23/bn254-compression> for further explanation.
+library Pairing {
+
+    uint256 constant PRIME_Q = 21888242871839275222246405745257275088696311157297823662689037894645226208583;
+
+    struct G1Point {
+        uint256 X;
+        uint256 Y;
+    }
+
+    // Encoding of field elements is: X[0] * z + X[1]
+    struct G2Point {
+        uint256[2] X;
+        uint256[2] Y;
+    }
+
+    /*
+     * @return The negation of p, i.e. p.plus(p.negate()) should be zero. 
+     */
+    function negate(G1Point memory p) internal pure returns (G1Point memory) {
+
+        // The prime q in the base field F_q for G1
+        if (p.X == 0 && p.Y == 0) {
+            return G1Point(0, 0);
+        } else {
+            return G1Point(p.X, PRIME_Q - (p.Y % PRIME_Q));
+        }
+    }
+
+    /*
+     * @return The sum of two points of G1
+     */
+    function plus(
+        G1Point memory p1,
+        G1Point memory p2
+    ) internal view returns (G1Point memory r) {
+
+        uint256[4] memory input;
+        input[0] = p1.X;
+        input[1] = p1.Y;
+        input[2] = p2.X;
+        input[3] = p2.Y;
+        bool success;
+
+        // solium-disable-next-line security/no-inline-assembly
+        assembly {
+            success := staticcall(sub(gas(), 2000), 6, input, 0xc0, r, 0x60)
+            // Use "invalid" to make gas estimation work
+            switch success case 0 { invalid() }
+        }
+
+        require(success,"pairing-add-failed");
+    }
+
+    /*
+     * @return The product of a point on G1 and a scalar, i.e.
+     *         p == p.scalar_mul(1) and p.plus(p) == p.scalar_mul(2) for all
+     *         points p.
+     */
+    function scalar_mul(G1Point memory p, uint256 s) internal view returns (G1Point memory r) {
+
+        uint256[3] memory input;
+        input[0] = p.X;
+        input[1] = p.Y;
+        input[2] = s;
+        bool success;
+        // solium-disable-next-line security/no-inline-assembly
+        assembly {
+            success := staticcall(sub(gas(), 2000), 7, input, 0x80, r, 0x60)
+            // Use "invalid" to make gas estimation work
+            switch success case 0 { invalid() }
+        }
+        require (success,"pairing-mul-failed");
+    }
+
+    /* @return The result of computing the pairing check
+     *         e(p1[0], p2[0]) *  .... * e(p1[n], p2[n]) == 1
+     *         For example,
+     *         pairing([P1(), P1().negate()], [P2(), P2()]) should return true.
+     */
+    function pairing(
+        G1Point memory a1,
+        G2Point memory a2,
+        G1Point memory b1,
+        G2Point memory b2,
+        G1Point memory c1,
+        G2Point memory c2,
+        G1Point memory d1,
+        G2Point memory d2
+    ) internal view returns (bool) {
+
+        G1Point[4] memory p1 = [a1, b1, c1, d1];
+        G2Point[4] memory p2 = [a2, b2, c2, d2];
+        uint256 inputSize = 24;
+        uint256[] memory input = new uint256[](inputSize);
+
+        for (uint256 i = 0; i < 4; i++) {
+            uint256 j = i * 6;
+            input[j + 0] = p1[i].X;
+            input[j + 1] = p1[i].Y;
+            input[j + 2] = p2[i].X[0];
+            input[j + 3] = p2[i].X[1];
+            input[j + 4] = p2[i].Y[0];
+            input[j + 5] = p2[i].Y[1];
+        }
+
+        uint256[1] memory out;
+        bool success;
+
+        // solium-disable-next-line security/no-inline-assembly
+        assembly {
+            success := staticcall(sub(gas(), 2000), 8, add(input, 0x20), mul(inputSize, 0x20), out, 0x20)
+            // Use "invalid" to make gas estimation work
+            switch success case 0 { invalid() }
+        }
+
+        require(success,"pairing-opcode-failed");
+
+        return out[0] != 0;
+    }
+}
+
 contract Verifier {
 
-    /// Some of the provided public input values are larger than the field modulus.
-    /// @dev Public input elements are not automatically reduced, as this is can be
-    /// a dangerous source of bugs.
-    error PublicInputNotInField();
+    using Pairing for *;
 
-    /// The proof is invalid.
-    /// @dev This can mean that provided Groth16 proof points are not on their
-    /// curves, that pairing equation fails, or that the proof is not for the
-    /// provided public input.
-    error ProofInvalid();
+    uint256 constant SNARK_SCALAR_FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+    uint256 constant PRIME_Q = 21888242871839275222246405745257275088696311157297823662689037894645226208583;
 
-    // Addresses of precompiles
-    uint256 constant PRECOMPILE_MODEXP = 0x05;
-    uint256 constant PRECOMPILE_ADD = 0x06;
-    uint256 constant PRECOMPILE_MUL = 0x07;
-    uint256 constant PRECOMPILE_VERIFY = 0x08;
-
-    // Base field Fp order P and scalar field Fr order R.
-    // For BN254 these are computed as follows:
-    //     t = 4965661367192848881
-    //     P = 36⋅t⁴ + 36⋅t³ + 24⋅t² + 6⋅t + 1
-    //     R = 36⋅t⁴ + 36⋅t³ + 18⋅t² + 6⋅t + 1
-    uint256 constant P = 0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47;
-    uint256 constant R = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001;
-
-    // Extension field Fp2 = Fp[i] / (i² + 1)
-    // Note: This is the complex extension field of Fp with i² = -1.
-    //       Values in Fp2 are represented as a pair of Fp elements (a₀, a₁) as a₀ + a₁⋅i.
-    // Note: The order of Fp2 elements is *opposite* that of the pairing contract, which
-    //       expects Fp2 elements in order (a₁, a₀). This is also the order in which
-    //       Fp2 elements are encoded in the public interface as this became convention.
-
-    // Constants in Fp
-    uint256 constant FRACTION_1_2_FP = 0x183227397098d014dc2822db40c0ac2ecbc0b548b438e5469e10460b6c3e7ea4;
-    uint256 constant FRACTION_27_82_FP = 0x2b149d40ceb8aaae81be18991be06ac3b5b4c5e559dbefa33267e6dc24a138e5;
-    uint256 constant FRACTION_3_82_FP = 0x2fcd3ac2a640a154eb23960892a85a68f031ca0c8344b23a577dcf1052b9e775;
-
-    // Exponents for inversions and square roots mod P
-    uint256 constant EXP_INVERSE_FP = 0x30644E72E131A029B85045B68181585D97816A916871CA8D3C208C16D87CFD45; // P - 2
-    uint256 constant EXP_SQRT_FP = 0xC19139CB84C680A6E14116DA060561765E05AA45A1C72A34F082305B61F3F52; // (P + 1) / 4;
-
-    // Groth16 alpha point in G1
-    uint256 constant ALPHA_X = 8678230002193187638686680567878011621889443809595412685562199650262534352050;
-    uint256 constant ALPHA_Y = 21883853508156585436284905316948111756081576237680031598357672814198469141780;
-
-    // Groth16 beta point in G2 in powers of i
-    uint256 constant BETA_NEG_X_0 = 6693918446141481916241004449382717362756438056436064306455147407238186926647;
-    uint256 constant BETA_NEG_X_1 = 14680661767419593411986384121099736151052167726031481494142884020193583074461;
-    uint256 constant BETA_NEG_Y_0 = 11606248654732877756260827743255444970501789506392504796733931145096896272307;
-    uint256 constant BETA_NEG_Y_1 = 15832889636684705622445205459118715629632135097089440253105200760731793963008;
-
-    // Groth16 gamma point in G2 in powers of i
-    uint256 constant GAMMA_NEG_X_0 = 4972073833105134161127211068027068319391544957277434910247927394520077891249;
-    uint256 constant GAMMA_NEG_X_1 = 7130666129326998210690351529912099713903423340542254454433400932570337062369;
-    uint256 constant GAMMA_NEG_Y_0 = 7368584588576613829506178745478369344890311306116962448115789984223986522920;
-    uint256 constant GAMMA_NEG_Y_1 = 7706566514491220061758723442520816189236093039371008061232789976861572042108;
-
-    // Groth16 delta point in G2 in powers of i
-    uint256 constant DELTA_NEG_X_0 = 21707059968567597205452051832602380767403547281711810589665406885047839771635;
-    uint256 constant DELTA_NEG_X_1 = 20980471308864851300184114673823881977121757200658060068606918906256396143877;
-    uint256 constant DELTA_NEG_Y_0 = 193220109415060276206157108424338153941127303413260974899072668460843352135;
-    uint256 constant DELTA_NEG_Y_1 = 4194177060237302332878049582796917285604554633913741820455714035759614087981;
-
-    // Constant and public input points
-    uint256 constant CONSTANT_X = 16287552433056802508617942849589129360056154598739446059117222592034572773750;
-    uint256 constant CONSTANT_Y = 17786098145647687709892294197773776656937043853129337382438987286649232254138;
-    uint256 constant PUB_0_X = 21425825012114052202966041664383592397639124356090447369158726418967186423371;
-    uint256 constant PUB_0_Y = 712989694241374984014424436840509244363260858535304742385751880475207280205;
-    uint256 constant PUB_1_X = 21425825012114052202966041664383592397639124356090447369158726418967186423371;
-    uint256 constant PUB_1_Y = 712989694241374984014424436840509244363260858535304742385751880475207280205;
-
-    /// Negation in Fp.
-    /// @notice Returns a number x such that a + x = 0 in Fp.
-    /// @notice The input does not need to be reduced.
-    /// @param a the base
-    /// @return x the result
-    function negate(uint256 a) internal pure returns (uint256 x) {
-        unchecked {
-            x = (P - (a % P)) % P; // Modulo is cheaper than branching
-        }
+    struct VerifyingKey {
+        Pairing.G1Point alfa1;
+        Pairing.G2Point beta2;
+        Pairing.G2Point gamma2;
+        Pairing.G2Point delta2;
+        Pairing.G1Point[3] IC;
     }
 
-    /// Exponentiation in Fp.
-    /// @notice Returns a number x such that a ^ e = x in Fp.
-    /// @notice The input does not need to be reduced.
-    /// @param a the base
-    /// @param e the exponent
-    /// @return x the result
-    function exp(uint256 a, uint256 e) internal view returns (uint256 x) {
-        bool success;
-        assembly ("memory-safe") {
-            let f := mload(0x40)
-            mstore(f, 0x20)
-            mstore(add(f, 0x20), 0x20)
-            mstore(add(f, 0x40), 0x20)
-            mstore(add(f, 0x60), a)
-            mstore(add(f, 0x80), e)
-            mstore(add(f, 0xa0), P)
-            success := staticcall(gas(), PRECOMPILE_MODEXP, f, 0xc0, f, 0x20)
-            x := mload(f)
-        }
-        if (!success) {
-            // Exponentiation failed.
-            // Should not happen.
-            revert ProofInvalid();
-        }
+    struct Proof {
+        Pairing.G1Point A;
+        Pairing.G2Point B;
+        Pairing.G1Point C;
     }
 
-    /// Invertsion in Fp.
-    /// @notice Returns a number x such that a * x = 1 in Fp.
-    /// @notice The input does not need to be reduced.
-    /// @notice Reverts with ProofInvalid() if the inverse does not exist
-    /// @param a the input
-    /// @return x the solution
-    function invert_Fp(uint256 a) internal view returns (uint256 x) {
-        x = exp(a, EXP_INVERSE_FP);
-        if (mulmod(a, x, P) != 1) {
-            // Inverse does not exist.
-            // Can only happen during G2 point decompression.
-            revert ProofInvalid();
-        }
+    function verifyingKey() internal pure returns (VerifyingKey memory vk) {
+        vk.alfa1 = Pairing.G1Point(uint256(1619335523732630491534989477161445074720740732674094442346148376542202930915), uint256(8210523212410516914179795474949146661313003082667504296118489031652641880175));
+        vk.beta2 = Pairing.G2Point([uint256(13583036336330907105619041265993225584222683636070568300115471915645318104109), uint256(13774456669488476474866366069682005761305059922856425230581724716926973794319)], [uint256(10856642745708854075017241777635630517924617619342006912647713261288899543764), uint256(17270088345727296368283415245673587461228897358622284110651685101167445383716)]);
+        vk.gamma2 = Pairing.G2Point([uint256(6208864838623592157374073614824535788502176696631971270990739321087093550738), uint256(21375325352200858571811325479974368099475656441121202414359467137791366906277)], [uint256(17731487216351891443687983088538632595210711520173656851005278744912039157772), uint256(21882843744775487478225301465709353241280611092858173549264750575775671443825)]);
+        vk.delta2 = Pairing.G2Point([uint256(965611838826596322835528052039849155677671314732175508812755230882045440035), uint256(10943198031911518903253079256565627234822072252309523016706783401545093068345)], [uint256(3318443057096307625739771804366810828844487280724212260077301513426218982930), uint256(4292612235463071728638423091348354399331583510066467432127125621970054638050)]);   
+        vk.IC[0] = Pairing.G1Point(uint256(15081217745381510175954372063705028365442645372222462098902275843782274000370), uint256(440474947050219404388987971469218591434842538737211939600430807101159569258));   
+        vk.IC[1] = Pairing.G1Point(uint256(1338583666061741469710320613816406842033707372470764138436379044698054836379), uint256(1173886230269743490807127568816954544367949509257855036381283732467963420460));   
+        vk.IC[2] = Pairing.G1Point(uint256(1338583666061741469710320613816406842033707372470764138436379044698054836379), uint256(1173886230269743490807127568816954544367949509257855036381283732467963420460));
     }
-
-    /// Square root in Fp.
-    /// @notice Returns a number x such that x * x = a in Fp.
-    /// @notice Will revert with InvalidProof() if the input is not a square
-    /// or not reduced.
-    /// @param a the square
-    /// @return x the solution
-    function sqrt_Fp(uint256 a) internal view returns (uint256 x) {
-        x = exp(a, EXP_SQRT_FP);
-        if (mulmod(x, x, P) != a) {
-            // Square root does not exist or a is not reduced.
-            // Happens when G1 point is not on curve.
-            revert ProofInvalid();
-        }
-    }
-
-    /// Square test in Fp.
-    /// @notice Returns wheter a number x exists such that x * x = a in Fp.
-    /// @notice Will revert with InvalidProof() if the input is not a square
-    /// or not reduced.
-    /// @param a the square
-    /// @return x the solution
-    function isSquare_Fp(uint256 a) internal view returns (bool) {
-        uint256 x = exp(a, EXP_SQRT_FP);
-        return mulmod(x, x, P) == a;
-    }
-
-    /// Square root in Fp2.
-    /// @notice Fp2 is the complex extension Fp[i]/(i^2 + 1). The input is
-    /// a0 + a1 ⋅ i and the result is x0 + x1 ⋅ i.
-    /// @notice Will revert with InvalidProof() if
-    ///   * the input is not a square,
-    ///   * the hint is incorrect, or
-    ///   * the input coefficents are not reduced.
-    /// @param a0 The real part of the input.
-    /// @param a1 The imaginary part of the input.
-    /// @param hint A hint which of two possible signs to pick in the equation.
-    /// @return x0 The real part of the square root.
-    /// @return x1 The imaginary part of the square root.
-    function sqrt_Fp2(uint256 a0, uint256 a1, bool hint) internal view returns (uint256 x0, uint256 x1) {
-        // If this square root reverts there is no solution in Fp2.
-        uint256 d = sqrt_Fp(addmod(mulmod(a0, a0, P), mulmod(a1, a1, P), P));
-        if (hint) {
-            d = negate(d);
-        }
-        // If this square root reverts there is no solution in Fp2.
-        x0 = sqrt_Fp(mulmod(addmod(a0, d, P), FRACTION_1_2_FP, P));
-        x1 = mulmod(a1, invert_Fp(mulmod(x0, 2, P)), P);
-
-        // Check result to make sure we found a root.
-        // Note: this also fails if a0 or a1 is not reduced.
-        if (a0 != addmod(mulmod(x0, x0, P), negate(mulmod(x1, x1, P)), P)
-        ||  a1 != mulmod(2, mulmod(x0, x1, P), P)) {
-            revert ProofInvalid();
-        }
-    }
-
-    /// Compress a G1 point.
-    /// @notice Reverts with InvalidProof if the coordinates are not reduced
-    /// or if the point is not on the curve.
-    /// @notice The point at infinity is encoded as (0,0) and compressed to 0.
-    /// @param x The X coordinate in Fp.
-    /// @param y The Y coordinate in Fp.
-    /// @return c The compresed point (x with one signal bit).
-    function compress_g1(uint256 x, uint256 y) internal view returns (uint256 c) {
-        if (x >= P || y >= P) {
-            // G1 point not in field.
-            revert ProofInvalid();
-        }
-        if (x == 0 && y == 0) {
-            // Point at infinity
-            return 0;
-        }
-
-        // Note: sqrt_Fp reverts if there is no solution, i.e. the x coordinate is invalid.
-        uint256 y_pos = sqrt_Fp(addmod(mulmod(mulmod(x, x, P), x, P), 3, P));
-        if (y == y_pos) {
-            return (x << 1) | 0;
-        } else if (y == negate(y_pos)) {
-            return (x << 1) | 1;
-        } else {
-            // G1 point not on curve.
-            revert ProofInvalid();
-        }
-    }
-
-    /// Decompress a G1 point.
-    /// @notice Reverts with InvalidProof if the input does not represent a valid point.
-    /// @notice The point at infinity is encoded as (0,0) and compressed to 0.
-    /// @param c The compresed point (x with one signal bit).
-    /// @return x The X coordinate in Fp.
-    /// @return y The Y coordinate in Fp.
-    function decompress_g1(uint256 c) internal view returns (uint256 x, uint256 y) {
-        // Note that X = 0 is not on the curve since 0³ + 3 = 3 is not a square.
-        // so we can use it to represent the point at infinity.
-        if (c == 0) {
-            // Point at infinity as encoded in EIP196 and EIP197.
-            return (0, 0);
-        }
-        bool negate_point = c & 1 == 1;
-        x = c >> 1;
-        if (x >= P) {
-            // G1 x coordinate not in field.
-            revert ProofInvalid();
-        }
-
-        // Note: (x³ + 3) is irreducible in Fp, so it can not be zero and therefore
-        //       y can not be zero.
-        // Note: sqrt_Fp reverts if there is no solution, i.e. the point is not on the curve.
-        y = sqrt_Fp(addmod(mulmod(mulmod(x, x, P), x, P), 3, P));
-        if (negate_point) {
-            y = negate(y);
-        }
-    }
-
-    /// Compress a G2 point.
-    /// @notice Reverts with InvalidProof if the coefficients are not reduced
-    /// or if the point is not on the curve.
-    /// @notice The G2 curve is defined over the complex extension Fp[i]/(i^2 + 1)
-    /// with coordinates (x0 + x1 ⋅ i, y0 + y1 ⋅ i).
-    /// @notice The point at infinity is encoded as (0,0,0,0) and compressed to (0,0).
-    /// @param x0 The real part of the X coordinate.
-    /// @param x1 The imaginary poart of the X coordinate.
-    /// @param y0 The real part of the Y coordinate.
-    /// @param y1 The imaginary part of the Y coordinate.
-    /// @return c0 The first half of the compresed point (x0 with two signal bits).
-    /// @return c1 The second half of the compressed point (x1 unmodified).
-    function compress_g2(uint256 x0, uint256 x1, uint256 y0, uint256 y1)
-    internal view returns (uint256 c0, uint256 c1) {
-        if (x0 >= P || x1 >= P || y0 >= P || y1 >= P) {
-            // G2 point not in field.
-            revert ProofInvalid();
-        }
-        if ((x0 | x1 | y0 | y1) == 0) {
-            // Point at infinity
-            return (0, 0);
-        }
-
-        // Compute y^2
-        // Note: shadowing variables and scoping to avoid stack-to-deep.
-        uint256 y0_pos;
-        uint256 y1_pos;
-        {
-            uint256 n3ab = mulmod(mulmod(x0, x1, P), P-3, P);
-            uint256 a_3 = mulmod(mulmod(x0, x0, P), x0, P);
-            uint256 b_3 = mulmod(mulmod(x1, x1, P), x1, P);
-            y0_pos = addmod(FRACTION_27_82_FP, addmod(a_3, mulmod(n3ab, x1, P), P), P);
-            y1_pos = negate(addmod(FRACTION_3_82_FP,  addmod(b_3, mulmod(n3ab, x0, P), P), P));
-        }
-
-        // Determine hint bit
-        // If this sqrt fails the x coordinate is not on the curve.
-        bool hint;
-        {
-            uint256 d = sqrt_Fp(addmod(mulmod(y0_pos, y0_pos, P), mulmod(y1_pos, y1_pos, P), P));
-            hint = !isSquare_Fp(mulmod(addmod(y0_pos, d, P), FRACTION_1_2_FP, P));
-        }
-
-        // Recover y
-        (y0_pos, y1_pos) = sqrt_Fp2(y0_pos, y1_pos, hint);
-        if (y0 == y0_pos && y1 == y1_pos) {
-            c0 = (x0 << 2) | (hint ? 2  : 0) | 0;
-            c1 = x1;
-        } else if (y0 == negate(y0_pos) && y1 == negate(y1_pos)) {
-            c0 = (x0 << 2) | (hint ? 2  : 0) | 1;
-            c1 = x1;
-        } else {
-            // G1 point not on curve.
-            revert ProofInvalid();
-        }
-    }
-
-    /// Decompress a G2 point.
-    /// @notice Reverts with InvalidProof if the input does not represent a valid point.
-    /// @notice The G2 curve is defined over the complex extension Fp[i]/(i^2 + 1)
-    /// with coordinates (x0 + x1 ⋅ i, y0 + y1 ⋅ i).
-    /// @notice The point at infinity is encoded as (0,0,0,0) and compressed to (0,0).
-    /// @param c0 The first half of the compresed point (x0 with two signal bits).
-    /// @param c1 The second half of the compressed point (x1 unmodified).
-    /// @return x0 The real part of the X coordinate.
-    /// @return x1 The imaginary poart of the X coordinate.
-    /// @return y0 The real part of the Y coordinate.
-    /// @return y1 The imaginary part of the Y coordinate.
-    function decompress_g2(uint256 c0, uint256 c1)
-    internal view returns (uint256 x0, uint256 x1, uint256 y0, uint256 y1) {
-        // Note that X = (0, 0) is not on the curve since 0³ + 3/(9 + i) is not a square.
-        // so we can use it to represent the point at infinity.
-        if (c0 == 0 && c1 == 0) {
-            // Point at infinity as encoded in EIP197.
-            return (0, 0, 0, 0);
-        }
-        bool negate_point = c0 & 1 == 1;
-        bool hint = c0 & 2 == 2;
-        x0 = c0 >> 2;
-        x1 = c1;
-        if (x0 >= P || x1 >= P) {
-            // G2 x0 or x1 coefficient not in field.
-            revert ProofInvalid();
-        }
-
-        uint256 n3ab = mulmod(mulmod(x0, x1, P), P-3, P);
-        uint256 a_3 = mulmod(mulmod(x0, x0, P), x0, P);
-        uint256 b_3 = mulmod(mulmod(x1, x1, P), x1, P);
-
-        y0 = addmod(FRACTION_27_82_FP, addmod(a_3, mulmod(n3ab, x1, P), P), P);
-        y1 = negate(addmod(FRACTION_3_82_FP,  addmod(b_3, mulmod(n3ab, x0, P), P), P));
-
-        // Note: sqrt_Fp2 reverts if there is no solution, i.e. the point is not on the curve.
-        // Note: (X³ + 3/(9 + i)) is irreducible in Fp2, so y can not be zero.
-        //       But y0 or y1 may still independently be zero.
-        (y0, y1) = sqrt_Fp2(y0, y1, hint);
-        if (negate_point) {
-            y0 = negate(y0);
-            y1 = negate(y1);
-        }
-    }
-
-    /// Compute the public input linear combination.
-    /// @notice Reverts with PublicInputNotInField if the input is not in the field.
-    /// @notice Computes the multi-scalar-multiplication of the public input
-    /// elements and the verification key including the constant term.
-    /// @param input The public inputs. These are elements of the scalar field Fr.
-    /// @return x The X coordinate of the resulting G1 point.
-    /// @return y The Y coordinate of the resulting G1 point.
-    function publicInputMSM(uint256[2] calldata input)
-    internal view returns (uint256 x, uint256 y) {
-        // Note: The ECMUL precompile does not reject unreduced values, so we check this.
-        // Note: Unrolling this loop does not cost much extra in code-size, the bulk of the
-        //       code-size is in the PUB_ constants.
-        // ECMUL has input (x, y, scalar) and output (x', y').
-        // ECADD has input (x1, y1, x2, y2) and output (x', y').
-        // We reduce commitments(if any) with constants as the first point argument to ECADD.
-        // We call them such that ecmul output is already in the second point
-        // argument to ECADD so we can have a tight loop.
-        bool success = true;
-        assembly ("memory-safe") {
-            let f := mload(0x40)
-            let g := add(f, 0x40)
-            let s
-            mstore(f, CONSTANT_X)
-            mstore(add(f, 0x20), CONSTANT_Y)
-            mstore(g, PUB_0_X)
-            mstore(add(g, 0x20), PUB_0_Y)
-            s :=  calldataload(input)
-            mstore(add(g, 0x40), s)
-            success := and(success, lt(s, R))
-            success := and(success, staticcall(gas(), PRECOMPILE_MUL, g, 0x60, g, 0x40))
-            success := and(success, staticcall(gas(), PRECOMPILE_ADD, f, 0x80, f, 0x40))
-            mstore(g, PUB_1_X)
-            mstore(add(g, 0x20), PUB_1_Y)
-            s :=  calldataload(add(input, 32))
-            mstore(add(g, 0x40), s)
-            success := and(success, lt(s, R))
-            success := and(success, staticcall(gas(), PRECOMPILE_MUL, g, 0x60, g, 0x40))
-            success := and(success, staticcall(gas(), PRECOMPILE_ADD, f, 0x80, f, 0x40))
-
-            x := mload(f)
-            y := mload(add(f, 0x20))
-        }
-        if (!success) {
-            // Either Public input not in field, or verification key invalid.
-            // We assume the contract is correctly generated, so the verification key is valid.
-            revert PublicInputNotInField();
-        }
-    }
-
-    /// Compress a proof.
-    /// @notice Will revert with InvalidProof if the curve points are invalid,
-    /// but does not verify the proof itself.
-    /// @param proof The uncompressed Groth16 proof. Elements are in the same order as for
-    /// verifyProof. I.e. Groth16 points (A, B, C) encoded as in EIP-197.
-    /// @return compressed The compressed proof. Elements are in the same order as for
-    /// verifyCompressedProof. I.e. points (A, B, C) in compressed format.
-    function compressProof(uint256[8] calldata proof)
-    public view returns (uint256[4] memory compressed) {
-        compressed[0] = compress_g1(proof[0], proof[1]);
-        (compressed[2], compressed[1]) = compress_g2(proof[3], proof[2], proof[5], proof[4]);
-        compressed[3] = compress_g1(proof[6], proof[7]);
-    }
-
-    /// Verify a Groth16 proof with compressed points.
-    /// @notice Reverts with InvalidProof if the proof is invalid or
-    /// with PublicInputNotInField the public input is not reduced.
-    /// @notice There is no return value. If the function does not revert, the
-    /// proof was successfully verified.
-    /// @param compressedProof the points (A, B, C) in compressed format
-    /// matching the output of compressProof.
-    /// @param input the public input field elements in the scalar field Fr.
-    /// Elements must be reduced.
-    function verifyCompressedProof(
-        uint256[4] calldata compressedProof,
-        uint256[2] calldata input
-    ) public view {
-        uint256[24] memory pairings;
-
-        {
-            (uint256 Ax, uint256 Ay) = decompress_g1(compressedProof[0]);
-            (uint256 Bx0, uint256 Bx1, uint256 By0, uint256 By1) = decompress_g2(compressedProof[2], compressedProof[1]);
-            (uint256 Cx, uint256 Cy) = decompress_g1(compressedProof[3]);
-            (uint256 Lx, uint256 Ly) = publicInputMSM(input);
-
-            // Verify the pairing
-            // Note: The precompile expects the F2 coefficients in big-endian order.
-            // Note: The pairing precompile rejects unreduced values, so we won't check that here.
-            // e(A, B)
-            pairings[ 0] = Ax;
-            pairings[ 1] = Ay;
-            pairings[ 2] = Bx1;
-            pairings[ 3] = Bx0;
-            pairings[ 4] = By1;
-            pairings[ 5] = By0;
-            // e(C, -δ)
-            pairings[ 6] = Cx;
-            pairings[ 7] = Cy;
-            pairings[ 8] = DELTA_NEG_X_1;
-            pairings[ 9] = DELTA_NEG_X_0;
-            pairings[10] = DELTA_NEG_Y_1;
-            pairings[11] = DELTA_NEG_Y_0;
-            // e(α, -β)
-            pairings[12] = ALPHA_X;
-            pairings[13] = ALPHA_Y;
-            pairings[14] = BETA_NEG_X_1;
-            pairings[15] = BETA_NEG_X_0;
-            pairings[16] = BETA_NEG_Y_1;
-            pairings[17] = BETA_NEG_Y_0;
-            // e(L_pub, -γ)
-            pairings[18] = Lx;
-            pairings[19] = Ly;
-            pairings[20] = GAMMA_NEG_X_1;
-            pairings[21] = GAMMA_NEG_X_0;
-            pairings[22] = GAMMA_NEG_Y_1;
-            pairings[23] = GAMMA_NEG_Y_0;
-
-            // Check pairing equation.
-            bool success;
-            uint256[1] memory output;
-            assembly ("memory-safe") {
-                success := staticcall(gas(), PRECOMPILE_VERIFY, pairings, 0x300, output, 0x20)
-            }
-            if (!success || output[0] != 1) {
-                // Either proof or verification key invalid.
-                // We assume the contract is correctly generated, so the verification key is valid.
-                revert ProofInvalid();
-            }
-        }
-    }
-
-    /// Verify an uncompressed Groth16 proof.
-    /// @notice Reverts with InvalidProof if the proof is invalid or
-    /// with PublicInputNotInField the public input is not reduced.
-    /// @notice There is no return value. If the function does not revert, the
-    /// proof was successfully verified.
-    /// @param proof the points (A, B, C) in EIP-197 format matching the output
-    /// of compressProof.
-    /// @param input the public input field elements in the scalar field Fr.
-    /// Elements must be reduced.
+    
+    /*
+     * @returns Whether the proof is valid given the hardcoded verifying key
+     *          above and the public inputs
+     */
     function verifyProof(
-        uint256[8] calldata proof,
-        uint256[2] calldata input
-    ) public view {
-        (uint256 x, uint256 y) = publicInputMSM(input);
+        uint256[2] memory a,
+        uint256[2][2] memory b,
+        uint256[2] memory c,
+        uint256[2] memory input
+    ) public view returns (bool r) {
 
-        // Note: The precompile expects the F2 coefficients in big-endian order.
-        // Note: The pairing precompile rejects unreduced values, so we won't check that here.
-        bool success;
-        assembly ("memory-safe") {
-            let f := mload(0x40) // Free memory pointer.
+        Proof memory proof;
+        proof.A = Pairing.G1Point(a[0], a[1]);
+        proof.B = Pairing.G2Point([b[0][0], b[0][1]], [b[1][0], b[1][1]]);
+        proof.C = Pairing.G1Point(c[0], c[1]);
 
-            // Copy points (A, B, C) to memory. They are already in correct encoding.
-            // This is pairing e(A, B) and G1 of e(C, -δ).
-            calldatacopy(f, proof, 0x100)
+        VerifyingKey memory vk = verifyingKey();
 
-            // Complete e(C, -δ) and write e(α, -β), e(L_pub, -γ) to memory.
-            // OPT: This could be better done using a single codecopy, but
-            //      Solidity (unlike standalone Yul) doesn't provide a way to
-            //      to do this.
-            mstore(add(f, 0x100), DELTA_NEG_X_1)
-            mstore(add(f, 0x120), DELTA_NEG_X_0)
-            mstore(add(f, 0x140), DELTA_NEG_Y_1)
-            mstore(add(f, 0x160), DELTA_NEG_Y_0)
-            mstore(add(f, 0x180), ALPHA_X)
-            mstore(add(f, 0x1a0), ALPHA_Y)
-            mstore(add(f, 0x1c0), BETA_NEG_X_1)
-            mstore(add(f, 0x1e0), BETA_NEG_X_0)
-            mstore(add(f, 0x200), BETA_NEG_Y_1)
-            mstore(add(f, 0x220), BETA_NEG_Y_0)
-            mstore(add(f, 0x240), x)
-            mstore(add(f, 0x260), y)
-            mstore(add(f, 0x280), GAMMA_NEG_X_1)
-            mstore(add(f, 0x2a0), GAMMA_NEG_X_0)
-            mstore(add(f, 0x2c0), GAMMA_NEG_Y_1)
-            mstore(add(f, 0x2e0), GAMMA_NEG_Y_0)
+        // Compute the linear combination vk_x
+        Pairing.G1Point memory vk_x = Pairing.G1Point(0, 0);
 
-            // Check pairing equation.
-            success := staticcall(gas(), PRECOMPILE_VERIFY, f, 0x300, f, 0x20)
-            // Also check returned value (both are either 1 or 0).
-            success := and(success, mload(f))
+        // Make sure that proof.A, B, and C are each less than the prime q
+        require(proof.A.X < PRIME_Q, "verifier-aX-gte-prime-q");
+        require(proof.A.Y < PRIME_Q, "verifier-aY-gte-prime-q");
+
+        require(proof.B.X[0] < PRIME_Q, "verifier-bX0-gte-prime-q");
+        require(proof.B.Y[0] < PRIME_Q, "verifier-bY0-gte-prime-q");
+
+        require(proof.B.X[1] < PRIME_Q, "verifier-bX1-gte-prime-q");
+        require(proof.B.Y[1] < PRIME_Q, "verifier-bY1-gte-prime-q");
+
+        require(proof.C.X < PRIME_Q, "verifier-cX-gte-prime-q");
+        require(proof.C.Y < PRIME_Q, "verifier-cY-gte-prime-q");
+
+        // Make sure that every input is less than the snark scalar field
+        for (uint256 i = 0; i < input.length; i++) {
+            require(input[i] < SNARK_SCALAR_FIELD,"verifier-gte-snark-scalar-field");
+            vk_x = Pairing.plus(vk_x, Pairing.scalar_mul(vk.IC[i + 1], input[i]));
         }
-        if (!success) {
-            // Either proof or verification key invalid.
-            // We assume the contract is correctly generated, so the verification key is valid.
-            revert ProofInvalid();
-        }
+
+        vk_x = Pairing.plus(vk_x, vk.IC[0]);
+
+        return Pairing.pairing(
+            Pairing.negate(proof.A),
+            proof.B,
+            vk.alfa1,
+            vk.beta2,
+            vk_x,
+            vk.gamma2,
+            proof.C,
+            vk.delta2
+        );
     }
 }
