@@ -81,9 +81,8 @@ func prove(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.V
 	proofInt := writeProof(buf.Bytes())
 	saveJson("proof.json", proofInt)
 
-	publicInput := make([]*big.Int, 2)
+	publicInput := make([]*big.Int, 1)
 	publicInput[0] = big.NewInt(1)
-	publicInput[1] = big.NewInt(2)
 	saveJson("input.json", publicInput)
 
 	return buf.Bytes(), nil
