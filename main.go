@@ -15,7 +15,7 @@ import (
 
 type TestCircuit struct {
 	A frontend.Variable `gnark:",public"`
-	B frontend.Variable `gnark:",public"`
+	B frontend.Variable
 	C frontend.Variable
 }
 
@@ -73,9 +73,8 @@ func prove() {
 	proofInt := writeProof(buf.Bytes())
 	saveJson("proof.json", proofInt)
 
-	input := make([]*big.Int, 2)
+	input := make([]*big.Int, 1)
 	input[0] = big.NewInt(1)
-	input[1] = big.NewInt(2)
 	saveJson("input.json", input)
 
 }
