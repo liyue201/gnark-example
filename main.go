@@ -49,6 +49,10 @@ func setup() (frontend.CompiledConstraintSystem, groth16.ProvingKey, groth16.Ver
 		return nil, nil, nil, err
 	}
 
+	var buffer bytes.Buffer
+	vk.WriteRawTo(&buffer)
+	os.WriteFile("test.vk", buffer.Bytes(), 0766)
+
 	return r1cs, pk, vk, nil
 }
 
@@ -76,12 +80,11 @@ func prove(r1cs frontend.CompiledConstraintSystem, pk groth16.ProvingKey, vk gro
 		return nil, err
 	}
 
-	proofInt := writeProof(buf.Bytes(), &assignment)
+	proofInt := writeProof(buf.Bytes())
 	saveJson("proof.json", proofInt)
 
-	publicInput := make([]*big.Int, 2)
+	publicInput := make([]*big.Int, 1)
 	publicInput[0] = big.NewInt(1)
-	publicInput[1] = big.NewInt(2)
 	saveJson("input.json", publicInput)
 
 	return proof, nil
@@ -113,13 +116,12 @@ func saveJson(filename string, v interface{}) {
 }
 
 type Proof struct {
-	A     [2]*big.Int
-	B     [2][2]*big.Int
-	C     [2]*big.Int
-	Input [1]int
+	A [2]*big.Int
+	B [2][2]*big.Int
+	C [2]*big.Int
 }
 
-func writeProof(proofBytes []byte, assignment *TestCircuit) *Proof {
+func writeProof(proofBytes []byte) *Proof {
 	const fpSize = 4 * 8
 
 	var proofBlob Proof
@@ -133,8 +135,6 @@ func writeProof(proofBytes []byte, assignment *TestCircuit) *Proof {
 	proofBlob.B[1][1] = new(big.Int).SetBytes(proofBytes[fpSize*5 : fpSize*6])
 	proofBlob.C[0] = new(big.Int).SetBytes(proofBytes[fpSize*6 : fpSize*7])
 	proofBlob.C[1] = new(big.Int).SetBytes(proofBytes[fpSize*7 : fpSize*8])
-
-	proofBlob.Input[0] = assignment.A.(int)
 
 	return &proofBlob
 }
