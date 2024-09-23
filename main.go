@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/backend/groth16"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
+	"github.com/consensys/gnark/io"
 	"io/ioutil"
 	"math/big"
 	"os"
@@ -49,9 +51,8 @@ func setup() (frontend.CompiledConstraintSystem, groth16.ProvingKey, groth16.Ver
 		return nil, nil, nil, err
 	}
 
-	var buffer bytes.Buffer
-	vk.WriteRawTo(&buffer)
-	os.WriteFile("test.vk", buffer.Bytes(), 0766)
+	saveJson("verifyingKey.json", vk)
+	saveRaw("verifyingKey", vk)
 
 	return r1cs, pk, vk, nil
 }
@@ -81,6 +82,8 @@ func prove(r1cs frontend.CompiledConstraintSystem, pk groth16.ProvingKey, vk gro
 	}
 
 	proofInt := writeProof(buf.Bytes())
+
+	saveRaw("proof", proof)
 	saveJson("proof.json", proofInt)
 
 	publicInput := make([]*big.Int, 1)
@@ -113,6 +116,16 @@ func verify(vk groth16.VerifyingKey, proof groth16.Proof) {
 func saveJson(filename string, v interface{}) {
 	proofJson, _ := json.MarshalIndent(v, " ", " ")
 	ioutil.WriteFile(filename, proofJson, 0644)
+}
+
+func saveRaw(filename string, v io.WriterRawTo) {
+	var buffer bytes.Buffer
+	_, err := v.WriteRawTo(&buffer)
+	if err != nil {
+		panic(err)
+	}
+	ioutil.WriteFile(filename+".bin", buffer.Bytes(), 0644)
+	ioutil.WriteFile(filename+".hex", []byte(hex.EncodeToString(buffer.Bytes())), 0644)
 }
 
 type Proof struct {
